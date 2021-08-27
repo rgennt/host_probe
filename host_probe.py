@@ -9,6 +9,9 @@ FILE = 'subscriptions.csv'
 
 sender = ''
 password = ''
+smtp_address = 'smtp.gmail.com'
+smtp_port = '465'
+smtp_ssl = True
 receiver = ''
 
 reader = {}
@@ -17,7 +20,7 @@ with open(FILE) as csvfile:
 
   for row in reader:
     probe = str_to_class(row['class'])(row['url'])
-    probe.setNotifyOnError(EmailNotifier('smtp.gmail.com','465',sender,password,receiver))
+    probe.setNotifyOnError(EmailNotifier(smtp_address, smtp_port, sender, receiver, smtp_ssl, password))
     probe.run()
 
 #probe = TLSExpiryProbe('/tmp/apache-selfsigned.crt')
