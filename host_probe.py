@@ -1,28 +1,17 @@
 from probes.probe import *
 from notifiers.notifier import *
-import csv, sys
+import csv, sys, json, os, glob, importlib
 
 def str_to_class(classname):
     return getattr(sys.modules[__name__], classname)
 
-FILE = 'subscriptions.csv'
+CONFIG_FILE = os.getenv('PROBE_CONFIG_FILE') or 'subscriptions.json'
+with open(f"{os.path.dirname(os.path.abspath(__file__))}/{CONFIG_FILE}") as json_file:
+ subscriptions = json.load(json_file)
 
-sender = ''
-password = ''
-smtp_address = 'smtp.gmail.com'
-smtp_port = '465'
-smtp_ssl = True
-receiver = ''
+for sub in subscriptions:
+  print(sub['notifier'])
+  probe = str_to_class(sub['probe'])(sub['probe_config'])
+  probe.setNotifyOnError(str_to_class(sub['notifier'])(sub['notifier_config']))
+  probe.run()
 
-reader = {}
-with open(FILE) as csvfile:
-  reader = csv.DictReader(csvfile)
-
-  for row in reader:
-    probe = str_to_class(row['class'])(row['url'])
-    probe.setNotifyOnError(EmailNotifier(smtp_address, smtp_port, sender, receiver, smtp_ssl, password))
-    probe.run()
-
-#probe = TLSExpiryProbe('/tmp/apache-selfsigned.crt')
-#probe.setNotifyOnError(LogNotifier())
-#probe.run()

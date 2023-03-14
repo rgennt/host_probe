@@ -1,0 +1,12 @@
+[
+    {
+        "name": "Example",
+        "notifier": "LogNotifier",
+        "probe": "HttpProbe",
+        "notifier_config": {
+        },
+        "probe_config": {
+          "url": "http://google.com"
+        }
+    }
+]

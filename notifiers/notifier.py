@@ -1,5 +1,8 @@
 import logging, ssl, smtplib
 class Notifier():
+  def __init__(self, config):
+    pass
+
   def notify(self, msg):
     print("Notification: " + msg)
 
@@ -14,22 +17,22 @@ class EmailNotifier(Notifier):
   password = None
   receiver = None
 
-  def __init__(self, server_addr, port, sender, receiver, ssl=True, password=None):
-    self.server_addr = server_addr
-    self.receiver = receiver
-    self.port = port
-    self.sender = sender
-    self.password = password
-    self.ssl = ssl
+  def __init__(self, config):
+    self.server_addr = config.get('server_addr', '')
+    self.receiver = config.get('receiver', '')
+    self.port = config.get('port', 25)
+    self.sender = config.get('sender', '')
+    self.password = config.get('password', '')
+    self.ssl = config.get('ssl', False)
+    self.subject = config.get('subject', 'Probe Failed')
     if not self.sender: 
       self.sender = self.receiver
 
   def notify(self, msg):
     message = "From: " + self.sender + "\n" +\
     "To: " + self.receiver + "\n" +\
-    """Subject: Probe Fail
-
-    """ + msg
+    "Subject: " + self.subject + "\n\n" +\
+     msg
     
     if self.ssl:
       context = ssl.create_default_context()
