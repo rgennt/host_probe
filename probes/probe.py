@@ -1,4 +1,6 @@
-import logging, requests, ssl, certifi, os, OpenSSL, datetime, json
+import logging, requests, ssl, certifi, os, OpenSSL, datetime, json, re
+
+import paramiko
 
 logging.basicConfig(level=logging.INFO)
 class Probe():
@@ -179,3 +181,82 @@ class APIBarracudaLBProbe(Probe):
         return "Error connecting", "Did you set username and password? or, perhaps, server is not reachable"
     except Exception as err:
       return None, self.url + ": " + str(err)
+
+
+class SSH_PKCS_KeystoreProbe(Probe):
+"""
+      1 [
+      2     {
+      3         "name": "Example",
+      4         "notifier": "LogNotifier",
+      5         "probe": "SSH_PKCS_KeystoreProbe",
+      6         "notifier_config": {
+      7         },
+      8         "probe_config": {
+      9           "host": "host.example.com",
+     10           "user": "remote_ssh_user",
+     11           "key": "/path/to/ssh/key",
+     12           "key_pass": "SSHKeyPassword",
+     13           "keystores": ["/path/to/keystore1.p12","/path/to/keystore2.p12"],
+     14           "keystore_pass": "keystorePassword",
+     15           "days": 300
+     16         }
+     17     }
+     18 ]
+"""
+  host = ''
+  days = 14
+
+  def __init__(self,config):
+    self.host = config.get('host','')
+    self.user = config.get('user','')
+    self.port = config.get('port','22')
+    self.key = config.get('key','')
+    self.key_pass = config.get('key_pass', None)
+    self.keystores = config.get('keystores',[])
+    self.keystore_pass = config.get('keystore_pass','')
+    self.days = config.get('days', 14)
+
+  def run(self):
+    err = None
+    result = ""
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    logging.info("Connecting to server: {}".format(self.host))
+    try:
+      client.connect(self.host, port=self.port, username=self.user, key_filename=self.key, password=self.key_pass)
+      pass
+    except paramiko.ssh_exception.AuthenticationException as e:
+      return e, "Error connecting to " + self.host
+    # convert to list with single element if only one keystore was provided
+    if (isinstance(self.keystores, str)):
+      self.keystores = [self.keystores]
+
+    for keystore in self.keystores:
+      command = '(out=$(keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ')&& echo "$out" || >&2 echo "$out") | grep Alias | cut -d " " -f3 | while read alias; do if ! keytool -exportcert -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ' -alias $alias 2>/dev/null | openssl x509 -inform der -checkend ' + str(self.days * 86400) + ' -noout 2>/dev/null; then keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ' -alias $alias | grep -E "^Alias|^Owner|^Valid"; echo; fi; done'
+      #print(command)
+      stdin, stdout, stderr = client.exec_command(command)
+      stdout.channel.recv_exit_status()
+      certs = stdout.readlines()
+      error = stderr.readlines()
+      if (error):
+        result += self.host + ": " + str(error) + "\n"
+
+    # Parse data 
+      expression = re.compile('Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
+      for item in "".join(certs).split("\n\n"):
+        if not item: break
+        alias = expression.match(item).group('alias')
+        subject = expression.match(item).group('subject')
+        issue_date = datetime.datetime.strptime(expression.match(item).group('from') ,'%m/%d/%y %H:%M %p')
+        expiry_date = datetime.datetime.strptime(expression.match(item).group('until') ,'%m/%d/%y %H:%M %p')
+        now = datetime.datetime.now()
+        delta = expiry_date - now 
+        if delta.days < 0:
+          result += self.host + ":" + alias +" : Expired " + str(abs(int(delta.days))) + " days ago\n"
+        elif delta.days < self.days:
+          result += self.host + ":" + alias + ": Expiring in " + str(delta.days) + " days\n"
+        else:
+          logging.info("Cert "  + self.host + ":" + alias + " is OK")
+    return None , result
