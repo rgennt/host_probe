@@ -184,7 +184,7 @@ class APIBarracudaLBProbe(Probe):
 
 
 class SSH_PKCS_KeystoreProbe(Probe):
-"""
+  """
       1 [
       2     {
       3         "name": "Example",
@@ -203,7 +203,7 @@ class SSH_PKCS_KeystoreProbe(Probe):
      16         }
      17     }
      18 ]
-"""
+  """
   host = ''
   days = 14
 
@@ -244,13 +244,15 @@ class SSH_PKCS_KeystoreProbe(Probe):
         result += self.host + ": " + str(error) + "\n"
 
     # Parse data 
-      expression = re.compile('Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
+      expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
       for item in "".join(certs).split("\n\n"):
         if not item: break
-        alias = expression.match(item).group('alias')
-        subject = expression.match(item).group('subject')
-        issue_date = datetime.datetime.strptime(expression.match(item).group('from') ,'%m/%d/%y %H:%M %p')
-        expiry_date = datetime.datetime.strptime(expression.match(item).group('until') ,'%m/%d/%y %H:%M %p')
+        search = expression.match(item)
+        if not search: continue
+        alias = search.group('alias')
+        subject = search.group('subject')
+        issue_date = datetime.datetime.strptime(search.group('from') ,'%m/%d/%y %H:%M %p')
+        expiry_date = datetime.datetime.strptime(search.group('until') ,'%m/%d/%y %H:%M %p')
         now = datetime.datetime.now()
         delta = expiry_date - now 
         if delta.days < 0:
