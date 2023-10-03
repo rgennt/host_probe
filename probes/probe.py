@@ -16,14 +16,66 @@ class Probe():
       notifier.notify()
     return result, err
 
+  def convertDict(self, data):
+    new_msg = """\
+          Host               Cert Label                              Cert Path           Days Until Expiry   Issue Date         Expiry Date        
+          ==========================================================+++++++++++++++++============================================================
+        """
+    body= """\
+          <html>
+            <head>
+              <style>
+                tr:nth-child(even) {background-color: #f2f2f2;}
+                table, th, td {
+                  border: 1px solid black;
+                  border-collapse: collapse;
+                }
+
+                th, td {
+                  padding: 15px;
+                }
+              </style>
+            </head>
+            <body>
+              <table>
+                <tr>
+                  <th>Host</th>
+                  <th>Cert Label</th>
+                  <th>Cert Path</th>
+                  <th>Days Until Expiry</th>
+                  <th>Issue Date</th>
+                  <th>Expiry Date</th>
+                </tr>
+        """
+    for i,entry in enumerate(data['expiring_certificates']):
+      new_msg += "{host:19} {lbl:39} {path:19} {exp:19} {issue:19} {expiry:19}\n".format(host = data['host'], lbl = entry['name'], path = entry['type'], exp = str(entry['expiry']), issue = entry['issue_date'].strftime("%Y-%m-%d %H:%M"), expiry = entry['expiry_date'].strftime("%Y-%m-%d %H:%M"))
+      style = "" if i%2==1 else "<tr style=\"background-color: #a9a9a9;\""
+      if (entry['expiry'] < 0): style = "background-color: #000000; color: #A52A2A;"
+      elif entry['expiry'] < 10: style = "background-color: #A52A2A;"
+      
+      body += "<tr style=\""+style+"\">"
+      body += "<td>" + data['host'] + "</td>"
+      body += "<td>" + entry['name'] + "</td>"
+      body += "<td>" + entry['type'] + "</td>"
+      body += "<td>" + str(entry['expiry']) + "</td>"
+      body += "<td>" + entry['issue_date'].strftime("%Y-%m-%d %H:%M") + "</td>"
+      body += "<td>" + entry['expiry_date'].strftime("%Y-%m-%d %H:%M") + "</td>"
+      body += "</tr>"
+          
+    return new_msg, body
+      
+
   # Decorate `run` with sending notifications on error
   def setNotifyOnError(self, notifier):
     old_run = self.run
     def wrapper():
       res, err = old_run()
+      if isinstance(err,dict):
+        plain,html = self.convertDict(err)
+        err = plain
       logging.debug("Checking notification")
       if err:
-        self.notifier.notify(err)
+        self.notifier.notify(err,html=html)
     self.notifier = notifier
     self.run = wrapper
 
@@ -162,6 +214,10 @@ class APIBarracudaLBProbe(Probe):
         response.raise_for_status()
         all_certs = response.json()['data'][0]
 
+        data = {}
+        data['host'] = self.url
+        data['expiring_certificates'] = []
+        data['ok_certificates'] = []
         # loop through types of certs
         for cert_type in all_certs.keys():
           certs = all_certs[cert_type]
@@ -169,14 +225,23 @@ class APIBarracudaLBProbe(Probe):
             x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert['certificate'])
             date = x509.get_notAfter()
             expiry_date = datetime.datetime.strptime(date.decode(),'%Y%m%d%H%M%SZ')
+            issue_date = datetime.datetime.strptime(x509.get_notBefore().decode(),'%Y%m%d%H%M%SZ')
             now = datetime.datetime.now()
             delta = expiry_date - now 
-
+            certificate = {}
+            certificate['name'] = cert['name']
+            certificate['expiry'] = delta.days
+            certificate['issue_date'] = issue_date
+            certificate['expiry_date'] = expiry_date
+            certificate['type'] = cert_type
+            
             if delta.days < self.days:
-              err = err + ( cert['name'] + ": Expiring in less than " + str(self.days) + " days\n")
+              #err = err + ( cert['name'] + "," + str(delta.days) + "," + issue_date.strftime("%Y-%m-%d %H:%M") + "," + expiry_date.strftime("%YYYY-%m-%d %H:%M") +"\n")
+              data['expiring_certificates'].append(certificate)
             else:
+              data['ok_certificates'].append(certificate)
               logging.info("TLS expiry at " + cert['name'] + " is OK")
-        return response.status_code, err
+        return response.status_code, data
       else:
         return "Error connecting", "Did you set username and password? or, perhaps, server is not reachable"
     except Exception as err:
@@ -243,7 +308,11 @@ class SSH_PKCS_KeystoreProbe(Probe):
       if (error):
         result += self.host + ": " + str(error) + "\n"
 
-    # Parse data 
+    # Parse data
+      data = {}
+      data['host'] = self.hostname
+      data['expiring_certificates'] = []
+      data['ok_certificates'] = []
       expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
       for item in "".join(certs).split("\n\n"):
         if not item: break
@@ -255,10 +324,16 @@ class SSH_PKCS_KeystoreProbe(Probe):
         expiry_date = datetime.datetime.strptime(search.group('until') ,'%m/%d/%y %H:%M %p')
         now = datetime.datetime.now()
         delta = expiry_date - now 
-        if delta.days < 0:
-          result += self.host + ":" + alias +" : Expired " + str(abs(int(delta.days))) + " days ago\n"
-        elif delta.days < self.days:
+        certificate = {}
+        certificate['name'] = alias
+        certificate['expiry'] = delta.days
+        certificate['issue_date'] = issue_date
+        certificate['expiry_date'] = expiry_date
+        certificate['type'] = keystore
+        if delta.days < self.days:
           result += self.host + ":" + alias + ": Expiring in " + str(delta.days) + " days\n"
+          data['expiring_certificates'].append(certificate)
         else:
+          data['ok_certificates'].append(certificate)
           logging.info("Cert "  + self.host + ":" + alias + " is OK")
-    return None , result
+    return None , data
