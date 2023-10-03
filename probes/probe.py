@@ -71,6 +71,7 @@ class Probe():
     def wrapper():
       res, err = old_run()
       if isinstance(err,dict):
+        if len(err["expiring_certificates"]) == 0: return
         plain,html = self.convertDict(err)
         err = plain
       logging.debug("Checking notification")
@@ -310,7 +311,7 @@ class SSH_PKCS_KeystoreProbe(Probe):
 
     # Parse data
       data = {}
-      data['host'] = self.hostname
+      data['host'] = self.host
       data['expiring_certificates'] = []
       data['ok_certificates'] = []
       expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
