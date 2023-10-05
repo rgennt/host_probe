@@ -11,6 +11,7 @@ with open(f"{os.path.dirname(os.path.abspath(__file__))}/{CONFIG_FILE}") as json
 
 for sub in subscriptions:
   print(sub['notifier'])
+  if sub['probe'] == "SSH_PKCS_KeystoreProbe": sub['probe'] = "SSH_KeystoreProbe"
   probe = str_to_class(sub['probe'])(sub['probe_config'])
   probe.setNotifyOnError(str_to_class(sub['notifier'])(sub['notifier_config']))
   probe.run()

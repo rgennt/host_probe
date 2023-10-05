@@ -249,7 +249,7 @@ class APIBarracudaLBProbe(Probe):
       return None, self.url + ": " + str(err)
 
 
-class SSH_PKCS_KeystoreProbe(Probe):
+class SSH_KeystoreProbe(Probe):
   """
       1 [
       2     {
@@ -263,7 +263,7 @@ class SSH_PKCS_KeystoreProbe(Probe):
      10           "user": "remote_ssh_user",
      11           "key": "/path/to/ssh/key",
      12           "key_pass": "SSHKeyPassword",
-     13           "keystores": ["/path/to/keystore1.p12","/path/to/keystore2.p12"],
+     13           "keystores": ["/path/to/keystore1.p12","/path/to/keystore2.p12",{"path": "/path", "pass": "password"}],
      14           "keystore_pass": "keystorePassword",
      15           "days": 300
      16         }
@@ -298,31 +298,51 @@ class SSH_PKCS_KeystoreProbe(Probe):
     # convert to list with single element if only one keystore was provided
     if (isinstance(self.keystores, str)):
       self.keystores = [self.keystores]
-
+    data = {}
+    data['host'] = self.host
+    data['expiring_certificates'] = []
+    data['ok_certificates'] = []
     for keystore in self.keystores:
-      command = '(out=$(keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ')&& echo "$out" || >&2 echo "$out") | grep Alias | cut -d " " -f3 | while read alias; do if ! keytool -exportcert -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ' -alias $alias 2>/dev/null | openssl x509 -inform der -checkend ' + str(self.days * 86400) + ' -noout 2>/dev/null; then keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + self.keystore_pass + ' -alias $alias | grep -E "^Alias|^Owner|^Valid"; echo; fi; done'
+      keystore_pass = self.keystore_pass
+      if isinstance(keystore,dict):
+        keystore_pass = keystore["pass"]
+        keystore = keystore["path"]
+      extension = keystore.split(".")[-1]
+      command = 'echo not able to identify keystore/certificate type. a: Err:unknown keystore type b: NA c: 01/01/00 00:00 am d: 10/10/00 00:00 am'
+      expression =  re.compile('.*a: (?P<alias>.*) b: (?P<subject>.*) c: (?P<from>.*) d: (?P<until>.*)$')
+      date_format = '%m/%d/%y %H:%M %p'
+      if extension == "p12":
+        expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
+        command = '(out=$(keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + keystore_pass + ')&& echo "$out" || >&2 echo "$out") | grep Alias | cut -d " " -f3 | while read alias; do if ! keytool -exportcert -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias 2>/dev/null | openssl x509 -inform der -checkend ' + str(self.days * 86400) + ' -noout 2>/dev/null; then keytool -list -v -storetype PKCS12 -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias | grep -E "^Alias|^Owner|^Valid"; echo; fi; done'
+        date_format = '%m/%d/%y %H:%M %p'
+      elif extension == "crt" or extension == "cert":
+        expression = re.compile('^.*Not Before: (?P<from>.*)$\n^.*Not After : (?P<until>.*)$\n^.*Subject:(?P<subject>.).*CN=(?P<alias>.*)$', re.MULTILINE)
+        command = 'openssl x509 -text -noout -in ' + keystore + ' | grep -E "Subject:|Not Before|Not After"'
+        date_format = '%b %d %H:%M:%S %Y %Z'
+      elif extension == "jks":
+        expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
+        command = '(out=$(keytool -list -v -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ')&& echo "$out" || >&2 echo "$out") | grep Alias | cut -d " " -f3 | while read alias; do if ! keytool -exportcert -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias 2>/dev/null | openssl x509 -inform der -checkend ' + str(self.days * 86400) + ' -noout 2>/dev/null; then keytool -list -v -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias | grep -E "^Alias|^Owner|^Valid"; echo; fi; done'
+        date_format = '%m/%d/%y %H:%M %p'
+        
       #print(command)
       stdin, stdout, stderr = client.exec_command(command)
       stdout.channel.recv_exit_status()
       certs = stdout.readlines()
       error = stderr.readlines()
+
       if (error):
         result += self.host + ": " + str(error) + "\n"
+        data['expiring_certificates'].append({"name": "".join(error), "expiry":0,"issue_date":datetime.datetime.now(),"expiry_date": datetime.datetime.now(),"type":"NA"})
 
     # Parse data
-      data = {}
-      data['host'] = self.host
-      data['expiring_certificates'] = []
-      data['ok_certificates'] = []
-      expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
       for item in "".join(certs).split("\n\n"):
         if not item: break
         search = expression.match(item)
         if not search: continue
         alias = search.group('alias')
         subject = search.group('subject')
-        issue_date = datetime.datetime.strptime(search.group('from') ,'%m/%d/%y %H:%M %p')
-        expiry_date = datetime.datetime.strptime(search.group('until') ,'%m/%d/%y %H:%M %p')
+        issue_date = datetime.datetime.strptime(search.group('from') ,date_format)
+        expiry_date = datetime.datetime.strptime(search.group('until') ,date_format)
         now = datetime.datetime.now()
         delta = expiry_date - now 
         certificate = {}
