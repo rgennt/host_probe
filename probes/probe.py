@@ -281,7 +281,7 @@ class SSH_KeystoreProbe(Probe):
     self.user = config.get('user','')
     self.port = config.get('port','22')
     self.key = config.get('key','')
-    self.key_pass = config.get('key_pass')
+    self.key_pass = config.get('key_pass', None)
     self.keystores = config.get('keystores',[])
     self.keystore_pass = config.get('keystore_pass','')
     self.days = config.get('days', 14)
@@ -375,8 +375,8 @@ class SSH_KeystoreProbe(Probe):
       error = stderr.readlines()
 
       if (error):
-        result += self.host + ": " + str(error) + "\n"
-        data['expiring_certificates'].append({"name": "".join(error), "expiry":0,"issue_date":datetime.datetime.now(),"expiry_date": datetime.datetime.now(),"type":"NA"})
+        result += host + ": " + str(error) + "\n"
+        data['expiring_certificates'].append({"host": host, "name": "".join(error), "expiry":0,"issue_date":datetime.datetime.now(),"expiry_date": datetime.datetime.now(),"type":"NA"})
 
     # Parse data
       for item in "".join(certs).split("\n\n"):
