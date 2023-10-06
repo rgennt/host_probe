@@ -6,6 +6,7 @@ logging.basicConfig(level=logging.INFO)
 class Probe():
 
   notifier = None
+  days_critical = 30
 
   def run(self):
     err = None
@@ -48,13 +49,13 @@ class Probe():
                 </tr>
         """
     for i,entry in enumerate(data['expiring_certificates']):
-      new_msg += "{host:19} {lbl:39} {path:19} {exp:19} {issue:19} {expiry:19}\n".format(host = data['host'], lbl = entry['name'], path = entry['type'], exp = str(entry['expiry']), issue = entry['issue_date'].strftime("%Y-%m-%d %H:%M"), expiry = entry['expiry_date'].strftime("%Y-%m-%d %H:%M"))
+      new_msg += "{host:19} {lbl:39} {path:19} {exp:19} {issue:19} {expiry:19}\n".format(host = entry['host'] if "host" in entry else data['host'] , lbl = entry['name'], path = entry['type'], exp = str(entry['expiry']), issue = entry['issue_date'].strftime("%Y-%m-%d %H:%M"), expiry = entry['expiry_date'].strftime("%Y-%m-%d %H:%M"))
       style = "" if i%2==1 else "<tr style=\"background-color: #a9a9a9;\""
       if (entry['expiry'] < 0): style = "background-color: #000000; color: #A52A2A;"
-      elif entry['expiry'] < 10: style = "background-color: #A52A2A;"
+      elif entry['expiry'] < self.days_critical: style = "background-color: #A52A2A;"
       
       body += "<tr style=\""+style+"\">"
-      body += "<td>" + data['host'] + "</td>"
+      body += "<td>" + entry['host'] if "host" in entry else data['host'] + "</td>"
       body += "<td>" + entry['name'] + "</td>"
       body += "<td>" + entry['type'] + "</td>"
       body += "<td>" + str(entry['expiry']) + "</td>"
@@ -199,6 +200,8 @@ class APIBarracudaLBProbe(Probe):
     self.days = config.get('days','')
     self.username = config.get('username','')
     self.password = config.get('password','')
+    if "days_critical" in config:
+      self.days_critical = config.get('days_critical')
 
   def run(self):
     err = ""
@@ -278,10 +281,12 @@ class SSH_KeystoreProbe(Probe):
     self.user = config.get('user','')
     self.port = config.get('port','22')
     self.key = config.get('key','')
-    self.key_pass = config.get('key_pass', None)
+    self.key_pass = config.get('key_pass')
     self.keystores = config.get('keystores',[])
     self.keystore_pass = config.get('keystore_pass','')
     self.days = config.get('days', 14)
+    if "days_critical" in config:
+      self.days_critical = config.get('days_critical')
 
   def run(self):
     err = None
@@ -289,12 +294,8 @@ class SSH_KeystoreProbe(Probe):
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    logging.info("Connecting to server: {}".format(self.host))
-    try:
-      client.connect(self.host, port=self.port, username=self.user, key_filename=self.key, password=self.key_pass)
-      pass
-    except paramiko.ssh_exception.AuthenticationException as e:
-      return e, "Error connecting to " + self.host
+    
+
     # convert to list with single element if only one keystore was provided
     if (isinstance(self.keystores, str)):
       self.keystores = [self.keystores]
@@ -302,12 +303,35 @@ class SSH_KeystoreProbe(Probe):
     data['host'] = self.host
     data['expiring_certificates'] = []
     data['ok_certificates'] = []
+    connected_to = ""
     for keystore in self.keystores:
       keystore_pass = self.keystore_pass
+      host = self.host
+      port = self.port
+      username = self.user
+      key_filename = self.key
+      password=self.key_pass
       if isinstance(keystore,dict):
-        keystore_pass = keystore["pass"]
-        keystore = keystore["path"]
-      extension = keystore.split(".")[-1]
+        if "keystore_pass" in keystore:
+          keystore_pass = keystore["keystore_pass"]
+        if "store_type" in keystore:
+          extension = keystore["store_type"]
+
+        if "host" in keystore:
+          host = keystore["host"]
+        if "port" in keystore:
+          port = keystore["port"]
+        if "user" in keystore:
+          username = keystore["user"]
+        if "key" in keystore:
+          key_filename = keystore["key"]
+        if "key_pass" in keystore:
+          password = keystore["key_pass"]
+        # must be the last if
+        if "path" in keystore:
+          keystore = keystore["path"]
+      try: extension
+      except NameError: extension = keystore.split(".")[-1]
       command = 'echo not able to identify keystore/certificate type. a: Err:unknown keystore type b: NA c: 01/01/00 00:00 am d: 10/10/00 00:00 am'
       expression =  re.compile('.*a: (?P<alias>.*) b: (?P<subject>.*) c: (?P<from>.*) d: (?P<until>.*)$')
       date_format = '%m/%d/%y %H:%M %p'
@@ -325,6 +349,26 @@ class SSH_KeystoreProbe(Probe):
         date_format = '%m/%d/%y %H:%M %p'
         
       #print(command)
+      if connected_to != host and client.get_transport() and client.get_transport().is_active():
+        logging.info("Disconnecting from: {}".format(connected_to))
+        client.close()
+      if not client.get_transport():
+        try:
+          logging.info("Connecting to server: {}".format(host))
+          client.connect(host, port=port, username=username, key_filename=key_filename, password=password)
+          connected_to = host
+          pass
+        except paramiko.ssh_exception.AuthenticationException as e:
+          certificate = {}
+          certificate['host'] = host
+          certificate['name'] = "Erro connecting to host"
+          certificate['expiry'] = 0
+          certificate['issue_date'] = datetime.datetime.now()
+          certificate['expiry_date'] = datetime.datetime.now()
+          certificate['type'] = ""
+          data['expiring_certificates'].append(certificate)
+          continue
+      
       stdin, stdout, stderr = client.exec_command(command)
       stdout.channel.recv_exit_status()
       certs = stdout.readlines()
@@ -346,6 +390,7 @@ class SSH_KeystoreProbe(Probe):
         now = datetime.datetime.now()
         delta = expiry_date - now 
         certificate = {}
+        certificate['host'] = host
         certificate['name'] = alias
         certificate['expiry'] = delta.days
         certificate['issue_date'] = issue_date
@@ -357,4 +402,6 @@ class SSH_KeystoreProbe(Probe):
         else:
           data['ok_certificates'].append(certificate)
           logging.info("Cert "  + self.host + ":" + alias + " is OK")
+    if (client):
+      client.close()
     return None , data
