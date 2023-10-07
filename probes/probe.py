@@ -285,6 +285,7 @@ class SSH_KeystoreProbe(Probe):
     self.keystores = config.get('keystores',[])
     self.keystore_pass = config.get('keystore_pass','')
     self.days = config.get('days', 14)
+    self.gskcmd_path = config.get('gskcmd_path', "gskcmd")
     if "days_critical" in config:
       self.days_critical = config.get('days_critical')
 
@@ -310,13 +311,17 @@ class SSH_KeystoreProbe(Probe):
       port = self.port
       username = self.user
       key_filename = self.key
+      gskcmd_path = self.gskcmd_path
       password=self.key_pass
+      try: del extension
+      except NameError: pass
       if isinstance(keystore,dict):
         if "keystore_pass" in keystore:
           keystore_pass = keystore["keystore_pass"]
         if "store_type" in keystore:
           extension = keystore["store_type"]
-
+        if "gskcmd_path" in keystore:
+          gskcmd_path = keystore["gskcmd_path"]
         if "host" in keystore:
           host = keystore["host"]
         if "port" in keystore:
@@ -332,7 +337,7 @@ class SSH_KeystoreProbe(Probe):
           keystore = keystore["path"]
       try: extension
       except NameError: extension = keystore.split(".")[-1]
-      command = 'echo not able to identify keystore/certificate type. a: Err:unknown keystore type b: NA c: 01/01/00 00:00 am d: 10/10/00 00:00 am'
+      command = 'echo not able to identify keystore/certificate type. a: Err:unknown keystore type b: ' + keystore + ' c: 01/01/00 00:00 am d: 10/10/00 00:00 am'
       expression =  re.compile('.*a: (?P<alias>.*) b: (?P<subject>.*) c: (?P<from>.*) d: (?P<until>.*)$')
       date_format = '%m/%d/%y %H:%M %p'
       if extension == "p12":
@@ -347,6 +352,10 @@ class SSH_KeystoreProbe(Probe):
         expression = re.compile('\n*^Alias name: (?P<alias>.*)$\n^Owner: (?P<subject>.*)$\n^Valid from: (?P<from>.*) until: (?P<until>.*)$', re.MULTILINE)
         command = '(out=$(keytool -list -v -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ')&& echo "$out" || >&2 echo "$out") | grep Alias | cut -d " " -f3 | while read alias; do if ! keytool -exportcert -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias 2>/dev/null | openssl x509 -inform der -checkend ' + str(self.days * 86400) + ' -noout 2>/dev/null; then keytool -list -v -storetype JKS -keystore ' + keystore + ' -storepass ' + keystore_pass + ' -alias $alias | grep -E "^Alias|^Owner|^Valid"; echo; fi; done'
         date_format = '%m/%d/%y %H:%M %p'
+      elif extension == "kdb":
+        expression = re.compile('\n*^Label: (?P<alias>.*)$\n^Subject:.*CN=(?P<subject>.*),.*$\n^Valid: From: (?P<from>.*) To: (?P<until>.*)$', re.MULTILINE)
+        command = '(out=$(' + gskcmd_path + ' -cert -list -db ' + keystore + ' -stashed | grep -v Certificates)&& echo "$out" || >&2 echo "$out")| while read alias; do if ! ' + gskcmd_path + ' -cert -extract -db ' + keystore + ' -stashed -label $alias -target /tmp/crtchk -format ascii 2>/dev/null | openssl x509 -checkend ' + str(self.days * 86400) + ' -noout -in /tmp/crtchk 2>/dev/null; then ' + gskcmd_path + ' -cert -details -db ' + keystore + ' -stashed -label $alias | grep -E "^Label|^Subject:|^Valid"; echo; fi; done'
+        date_format = '%A, %B %d, %Y %I:%M:%S %p %Z'
         
       #print(command)
       if connected_to != host and client.get_transport() and client.get_transport().is_active():
@@ -361,7 +370,7 @@ class SSH_KeystoreProbe(Probe):
         except paramiko.ssh_exception.AuthenticationException as e:
           certificate = {}
           certificate['host'] = host
-          certificate['name'] = "Erro connecting to host"
+          certificate['name'] = "Error connecting to host"
           certificate['expiry'] = 0
           certificate['issue_date'] = datetime.datetime.now()
           certificate['expiry_date'] = datetime.datetime.now()
@@ -376,7 +385,7 @@ class SSH_KeystoreProbe(Probe):
 
       if (error):
         result += host + ": " + str(error) + "\n"
-        data['expiring_certificates'].append({"host": host, "name": "".join(error), "expiry":0,"issue_date":datetime.datetime.now(),"expiry_date": datetime.datetime.now(),"type":"NA"})
+        data['expiring_certificates'].append({"host": host, "name": "".join(error), "expiry":0,"issue_date":datetime.datetime.now(),"expiry_date": datetime.datetime.now(),"type": keystore})
 
     # Parse data
       for item in "".join(certs).split("\n\n"):
